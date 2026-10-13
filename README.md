@@ -1,5 +1,7 @@
 # Liberl Toolkit · 利贝尔工具箱
 
+<img src="assets/liberl-toolkit.png" width="96" alt="利贝尔工具箱图标：蓝色导力核心、黄铜罗盘与飞翼">
+
 A Chinese-language Windows trainer and save editor for **Trails in the Sky 2nd Chapter**.
 
 面向《空之轨迹 the 2nd》Steam 版的中文修改器：统一管理物品、资源、角色数值、自动钓鱼和存档。

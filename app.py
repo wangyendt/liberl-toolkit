@@ -2,7 +2,7 @@
 import json, os, sys, traceback
 from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QAbstractTableModel, QModelIndex, QSortFilterProxyModel
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QKeySequence, QShortcut
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QHBoxLayout,QVBoxLayout,QGridLayout,QLabel,QPushButton,QLineEdit,QComboBox,QCheckBox,QSpinBox,QTableView,QHeaderView,QListWidget,QStackedWidget,QFileDialog,QMessageBox,QPlainTextEdit,QFrame,QGroupBox,QAbstractItemView)
 from game_data import *
 from backend import Editor,DATA_ROOT,SaveContainer,backup_saves,atomic_file
@@ -38,12 +38,16 @@ QHeaderView::section { background:#e5eff5; color:#3f6077; border:0; border-botto
 QStatusBar { background:#dfeaf1; }
 '''
 
+VERSION='1.2.1'
+ASSET_ROOT=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/'assets'
+
 def configure_ui(app):
     # Explicit registration also lets the offscreen verifier render Chinese.
     for name in ['msyh.ttc','msyhbd.ttc','georgia.ttf','georgiab.ttf']:
         path=Path(os.environ.get('WINDIR','C:/Windows'))/'Fonts'/name
         if path.exists():QFontDatabase.addApplicationFont(str(path))
     app.setFont(QFont('Microsoft YaHei',10));app.setStyle('Fusion');app.setStyleSheet(STYLE)
+    app.setWindowIcon(QIcon(str(ASSET_ROOT/'liberl-toolkit.ico')))
 
 def label(text,kind=None,wrap=False):
     w=QLabel(text)
@@ -92,7 +96,7 @@ class ItemFilter(QSortFilterProxyModel):
 
 class Trainer(QMainWindow):
     def __init__(self,game_dir=DEFAULT_GAME,auto_connect=False):
-        super().__init__();self.setWindowTitle('Liberl Toolkit · 空之轨迹 the 2nd v1.2');self.resize(1190,820);self.setMinimumSize(1040,740)
+        super().__init__();self.setWindowTitle(f'Liberl Toolkit · 空之轨迹 the 2nd v{VERSION}');self.resize(1190,820);self.setMinimumSize(1040,740)
         self.catalog=Catalog(game_dir);self.editor=Editor(self.catalog);self.loading=False;self.resource_inputs=[];self.resource_locks=[];self.char_rows=[];self.selected_item=None;self.pages=[]
         self._build();self.refresh_saves();self.refresh_backups()
         self.timer=QTimer(self);self.timer.timeout.connect(self.tick);self.timer.start(200)
@@ -104,9 +108,10 @@ class Trainer(QMainWindow):
     def _build(self):
         base=QWidget();outer=QHBoxLayout(base);outer.setContentsMargins(0,0,0,0);outer.setSpacing(0);self.setCentralWidget(base)
         rail=QFrame();rail.setObjectName('rail');rail.setFixedWidth(207);rl=QVBoxLayout(rail);rl.setContentsMargins(20,30,20,22)
+        emblem=QLabel();emblem.setPixmap(QIcon(str(ASSET_ROOT/'liberl-toolkit.ico')).pixmap(64,64));rl.addWidget(emblem)
         rl.addWidget(label('利贝尔工具箱','brand'));rl.addWidget(label('Liberl Toolkit · the 2nd'));rl.addSpacing(25)
         self.nav=QListWidget();self.nav.setObjectName('nav');rl.addWidget(self.nav,1)
-        rl.addWidget(label(f'Steam · {BUILD}\nv1.2 · 本地修改',wrap=True));outer.addWidget(rail)
+        rl.addWidget(label(f'Steam · {BUILD}\nv{VERSION} · 本地修改',wrap=True));outer.addWidget(rail)
         content=QWidget();content.setObjectName('content');cl=QVBoxLayout(content);cl.setContentsMargins(28,24,28,18);cl.setSpacing(15)
         cl.addWidget(label('空之轨迹 the 2nd 修改器','title'));cl.addWidget(label('管理物品、资源和角色数值，开启钓鱼辅助，编辑与备份存档。','subtitle'))
         self.connect_btn=button('连接游戏',self.connect_game,True);self.disconnect_btn=button('断开连接',self.disconnect);self.undo_btn=button('撤销上次修改',lambda:self.act(self.editor.undo));self.stop_btn=button('关闭全部持续修改',self.stop_locks)
