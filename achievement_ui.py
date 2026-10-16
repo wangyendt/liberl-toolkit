@@ -10,7 +10,7 @@ from achievements import plan_completion
 
 
 class AchievementModel(QAbstractTableModel):
-    HEADERS = ['编号', '成就 / 阶段', '分类', '实际进度', '奖励', '状态', '操作']
+    HEADERS = ['编号', '成就 / 阶段', '分类', '进度', '奖励', '状态', '操作']
 
     def __init__(self, catalog):
         super().__init__()
@@ -39,7 +39,7 @@ class AchievementModel(QAbstractTableModel):
             return [str(achievement.id), achievement.name, achievement.category,
                     achievement.format_progress(state.progress) if state else '—',
                     achievement.reward_text, state.status if state else '尚未读取',
-                    '完成' if state and not state.complete else '—'][index.column()]
+                    ('完成' if not state.complete else '同步进度' if state.progress is not None and state.progress < achievement.target else '—') if state else '—'][index.column()]
         if role == Qt.ForegroundRole and index.column() == 5 and state:
             return QColor({'未完成': '#647e90', '可领奖': '#397a5c', '已领奖': '#8c9daa'}[state.status])
         if role == Qt.ToolTipRole:
@@ -79,22 +79,22 @@ class CompleteButtonDelegate(QStyledItemDelegate):
         self.callback = callback
 
     def paint(self, painter, option, index):
-        if index.data() != '完成':
+        if index.data() not in ('完成','同步进度'):
             super().paint(painter, option, index)
             return
         button = QStyleOptionButton()
         button.rect = option.rect.adjusted(5, 3, -5, -3)
-        button.text = '完成'
+        button.text = index.data()
         button.state = QStyle.State_Enabled
         if option.state & QStyle.State_MouseOver:
             button.state |= QStyle.State_MouseOver
         QApplication.style().drawControl(QStyle.CE_PushButton, button, painter)
 
     def editorEvent(self, event, model, option, index):
-        if (index.data() == '完成' and event.type() == QEvent.MouseButtonRelease
+        if (index.data() in ('完成','同步进度') and event.type() == QEvent.MouseButtonRelease
                 and event.button() == Qt.LeftButton
                 and option.rect.adjusted(5, 3, -5, -3).contains(event.position().toPoint())):
-            self.callback(index.data(Qt.UserRole))
+            self.callback(index.data(Qt.UserRole),index.data()=='同步进度')
             return True
         return False
 
@@ -132,10 +132,10 @@ class AchievementsPage(QWidget):
         self.table.verticalHeader().hide()
         self.table.verticalHeader().setDefaultSectionSize(35)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        for column, width in [(0, 48), (2, 62), (3, 115), (4, 178), (5, 82), (6, 72)]:
+        for column, width in [(0, 48), (2, 62), (3, 115), (4, 178), (5, 82), (6, 88)]:
             self.table.setColumnWidth(column, width)
         self.table.setItemDelegateForColumn(6, CompleteButtonDelegate(self.complete, self.table))
-        self.table.activated.connect(lambda index: self.complete(index.data(Qt.UserRole)) if index.column() == 6 else None)
+        self.table.activated.connect(lambda index: self.complete(index.data(Qt.UserRole),index.data()=='同步进度') if index.column() == 6 else None)
         layout.addWidget(self.table, 1)
         self.details = QLabel('选择一条成就，查看要求、奖励及递进阶段。')
         self.details.setWordWrap(True)
@@ -147,14 +147,18 @@ class AchievementsPage(QWidget):
         actions = QHBoxLayout()
         self.include_lower = QCheckBox('一并完成该系列的较低阶段')
         self.include_lower.setChecked(False)
+        self.sync_progress = QCheckBox('同步系列进度至目标')
+        self.sync_progress.setChecked(True)
+        self.sync_progress.setToolTip('同系列共享一个计数；只提高到当前目标，保留已有更高计数。游戏也可能据此自动完成较低阶段。')
         self.complete_button = QPushButton('完成选中成就')
         self.complete_button.setObjectName('primary')
         self.complete_button.clicked.connect(lambda: self.complete(self.selected_id))
         actions.addWidget(self.include_lower)
+        actions.addWidget(self.sync_progress)
         actions.addStretch()
         actions.addWidget(self.complete_button)
         layout.addLayout(actions)
-        hint = QLabel('完成后重新打开游戏的 REWARD 页面领取奖励。实际进度单独显示，领奖后无法通过撤销收回奖励。')
+        hint = QLabel('同系列共用进度计数。完成后重新打开游戏 REWARD 领奖；已领奖条目可同步不足的进度，领奖后无法通过撤销收回奖励。')
         hint.setObjectName('muted')
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -163,6 +167,7 @@ class AchievementsPage(QWidget):
             signal.connect(self.filter_rows)
         self.table.selectionModel().selectionChanged.connect(self.select)
         self.include_lower.toggled.connect(self.update_enabled)
+        self.sync_progress.toggled.connect(self.update_enabled)
         self.update_enabled()
 
     def filter_rows(self, *_):
@@ -187,7 +192,9 @@ class AchievementsPage(QWidget):
         active = bool(self.trainer.editor.mode and self.model.snapshot)
         selected = self.selected_id
         self.complete_button.setEnabled(False)
+        self.complete_button.setText('完成选中成就')
         self.include_lower.setEnabled(active)
+        self.sync_progress.setEnabled(active)
         if selected is None:
             return
         achievement = self.catalog.achievements[selected]
@@ -199,9 +206,16 @@ class AchievementsPage(QWidget):
         else:
             text = '此成就没有较低阶段。'
         if active:
-            changes = plan_completion(self.catalog, self.model.snapshot, selected, self.include_lower.isChecked())
+            try:
+                changes = plan_completion(self.catalog, self.model.snapshot, selected, self.include_lower.isChecked(),self.sync_progress.isChecked())
+            except RuntimeError as error:
+                self.series_info.setText(f'{text} · {error}')
+                return
             self.complete_button.setEnabled(bool(changes))
-            text += f' · 本次将完成 {len(changes)} 项'
+            flag_count=sum(len(data)==1 for _,data in changes)
+            text += f' · 本次将完成 {flag_count} 项'
+            if any(len(data)==4 for _,data in changes):text+=f'，进度同步至 {achievement.target}'
+            self.complete_button.setText('同步选中进度' if self.model.snapshot[selected].complete else '完成选中成就')
         self.series_info.setText(text)
 
     def refresh(self, snapshot):
@@ -215,14 +229,14 @@ class AchievementsPage(QWidget):
             self.summary.setText('连接游戏或打开存档后，可查看成就状态与奖励。')
         self.select()
 
-    def complete(self, aid):
+    def complete(self, aid, force_sync=False):
         if aid is None or not self.trainer.editor.mode:
             return
         count = 0
         def write():
             nonlocal count
-            count = self.trainer.editor.complete_achievement(aid, self.include_lower.isChecked())
+            count = self.trainer.editor.complete_achievement(aid, self.include_lower.isChecked(),force_sync or self.sync_progress.isChecked())
         if self.trainer.act(write):
-            self.trainer.note(f'已完成 {count} 项成就。' + (
+            self.trainer.note(f'已处理成就，新增完成 {count} 项。' + (
                 '重新打开游戏 REWARD 领取奖励，并另存一个手动存档。' if self.trainer.editor.mode == 'live'
                 else '请导出或保存到空槽位，在游戏载入后领取奖励。'))

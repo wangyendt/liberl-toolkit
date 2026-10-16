@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from achievements import (AchievementCatalog, AchievementState, ACHIEVEMENT_FLAGS,
-                          PROGRESS_SAVE, decode_progress, plan_completion)
+                          PROGRESS_SAVE, decode_progress, encode_progress, plan_completion)
 from backend import Editor, SaveContainer, checksum
 from game_data import RAW_SIZE, CHARACTERS, CHAR_STRIDE, INVENTORY
 
@@ -118,6 +118,21 @@ class AchievementLogicTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             AchievementCatalog.parse(synthetic_table(), {})
 
+    def test_synchronized_plan_raises_only_shared_counter_and_selected_flag(self):
+        changes=plan_completion(self.catalog,self.snapshot,220,sync_progress=True)
+        self.assertEqual(changes,[(ACHIEVEMENT_FLAGS+220,b'\x01'),(PROGRESS_SAVE+96*4,encode_progress(150))])
+
+    def test_progress_sync_preserves_higher_progress_and_claimed_flags(self):
+        self.snapshot[220]=AchievementState(3,175)
+        self.assertEqual(plan_completion(self.catalog,self.snapshot,220,sync_progress=True),[])
+        self.snapshot[220]=AchievementState(3,0)
+        self.assertEqual(plan_completion(self.catalog,self.snapshot,220,sync_progress=True),[(PROGRESS_SAVE+96*4,encode_progress(150))])
+
+    def test_invalid_counter_rejected_before_flags_are_written(self):
+        self.snapshot[220]=AchievementState(0,None)
+        with self.assertRaises(RuntimeError):plan_completion(self.catalog,self.snapshot,220,sync_progress=True)
+        with self.assertRaises(ValueError):encode_progress(0x20000000)
+
 
 class AchievementEditingTests(unittest.TestCase):
     def setUp(self):
@@ -153,7 +168,7 @@ class AchievementEditingTests(unittest.TestCase):
 
     def test_edit_export_only_changes_completion_and_checksum(self):
         before = bytes(self.ed.container.raw)
-        self.assertEqual(self.ed.complete_achievement(220), 1)
+        self.assertEqual(self.ed.complete_achievement(220,sync_progress=False), 1)
         after = self.ed.container.raw
         self.assertEqual([i for i, (a, b) in enumerate(zip(before, after)) if a != b], [ACHIEVEMENT_FLAGS + 220])
         self.assertEqual(self.ed.achievement_snapshot()[220], AchievementState(1, 4))
@@ -227,6 +242,54 @@ class AchievementEditingTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.ed.complete_achievement(220)
         self.assertEqual(bytes(self.ed.container.raw), before)
+
+    def test_default_completion_syncs_progress_and_undo_restores_both(self):
+        before=bytes(self.ed.container.raw)
+        self.ed.complete_achievement(220)
+        self.assertEqual(self.ed.achievement_snapshot()[220],AchievementState(1,150))
+        changed={i for i,(a,b) in enumerate(zip(before,self.ed.container.raw)) if a!=b}
+        self.assertTrue(changed<={ACHIEVEMENT_FLAGS+220,*range(PROGRESS_SAVE+96*4,PROGRESS_SAVE+96*4+4)})
+        encoded=SaveContainer(self.ed.container.encode())
+        self.assertEqual(struct.unpack_from('<I',encoded.raw,PROGRESS_SAVE+96*4)[0],0x40000096)
+        self.ed.undo();self.assertEqual(bytes(self.ed.container.raw),before)
+
+    def test_live_counter_write_uses_system_address_and_can_undo(self):
+        self.ed.state=0x30000000
+        flags=bytearray(512);counter=bytearray(encode_progress(4));writes=[]
+        def read(address,size):
+            if address==0x20000000+0x11100:
+                data=bytearray(size);data[96*4:96*4+4]=counter;return bytes(data)
+            if address==0x20000000+0x11100+96*4:return bytes(counter)
+            offset=address-(0x30000000+8+ACHIEVEMENT_FLAGS)
+            if 0<=offset<512:return bytes(flags[offset:offset+size])
+            for rva,original in __import__('achievements').PROFILE_PROBES:
+                if address==0x10000000+rva:return original
+            raise AssertionError(hex(address))
+        def write(address,data):
+            writes.append(address)
+            if address==0x20000000+0x11100+96*4:counter[:]=data;return
+            offset=address-(0x30000000+8+ACHIEVEMENT_FLAGS)
+            if 0<=offset<512:flags[offset:offset+len(data)]=data;return
+            raise AssertionError(hex(address))
+        self.ed.memory=SimpleNamespace(base=0x10000000,pid=1,u64=lambda _:0x20000000,read=read,write=write,close=lambda:None)
+        try:
+            with patch.object(self.ed,'_check_live'),patch.object(self.ed,'validate'):
+                self.ed.complete_achievement(220)
+                self.assertEqual(self.ed.achievement_snapshot()[220],AchievementState(1,150))
+                self.assertEqual(writes,[0x30000000+8+ACHIEVEMENT_FLAGS+220,0x20000000+0x11100+96*4])
+                self.ed.undo()
+                self.assertEqual(self.ed.achievement_snapshot()[220],AchievementState(0,4))
+        finally:self.ed.memory=None
+
+    def test_counter_failure_rolls_back_completed_flags(self):
+        before=bytes(self.ed.container.raw)
+        write=self.ed._write
+        def fail_counter(offset,data):
+            if offset==PROGRESS_SAVE+96*4:raise RuntimeError('simulated counter write failure')
+            write(offset,data)
+        with patch.object(self.ed,'_write',side_effect=fail_counter):
+            with self.assertRaises(RuntimeError):self.ed.complete_achievement(220,True)
+        self.assertEqual(bytes(self.ed.container.raw),before)
 
 
 if __name__ == '__main__':

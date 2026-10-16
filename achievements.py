@@ -39,6 +39,12 @@ def decode_progress(word):
     return 0
 
 
+def encode_progress(value):
+    if not isinstance(value, int) or not 0 <= value <= 0x1FFFFFFF:
+        raise ValueError('成就计数超出允许范围')
+    return struct.pack('<I', 0x40000000 | value)
+
+
 @dataclass(frozen=True)
 class Achievement:
     id: int
@@ -138,8 +144,8 @@ class AchievementCatalog:
         return tuple(a.id for a in self.series(aid) if a.target <= selected.target)
 
 
-def plan_completion(catalog, snapshot, aid, include_lower=False):
-    """Only set completion bits. Preserve claimed bits and all other game data."""
+def plan_completion(catalog, snapshot, aid, include_lower=False, sync_progress=False):
+    """Preserve claimed bits; optionally raise the shared objective counter."""
     ids = catalog.completion_ids(aid, include_lower)
     changes = []
     for item_id in ids:
@@ -148,4 +154,11 @@ def plan_completion(catalog, snapshot, aid, include_lower=False):
             raise RuntimeError('成就状态格式无效，已拒绝修改')
         if not state.complete:
             changes.append((ACHIEVEMENT_FLAGS + item_id, bytes([state.flags | 1])))
+    if sync_progress:
+        achievement = catalog.achievements[aid]
+        progress = snapshot[aid].progress
+        if progress is None or progress < 0:
+            raise RuntimeError('成就计数无效，已拒绝修改')
+        if progress < achievement.target:
+            changes.append((PROGRESS_SAVE + achievement.objective * 4, encode_progress(achievement.target)))
     return changes

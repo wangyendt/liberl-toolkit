@@ -122,17 +122,26 @@ class Editor:
     def read(self,offset,size):
         if not 0<=offset<=RAW_SIZE-size:raise ValueError('读取范围无效')
         if self.memory:
-            self._check_live();return self.memory.read(self.state+8+offset,size)
+            self._check_live();return self.memory.read(self._live_address(offset,size),size)
         if self.container:return bytes(self.container.raw[offset:offset+size])
         raise RuntimeError('请先连接游戏或打开存档')
 
     def _write(self,offset,data):
         if not 0<=offset<=RAW_SIZE-len(data):raise ValueError('写入范围无效')
         if self.memory:
-            self._check_live();self.memory.write(self.state+8+offset,data)
+            self._check_live();self.memory.write(self._live_address(offset,len(data)),data)
         elif self.container:
             self.container.raw[offset:offset+len(data)]=data;self.dirty=True
         else:raise RuntimeError('没有载入游戏数据')
+
+    def _live_address(self,offset,size):
+        # The serializer rebuilds this block from the system object. Reading or
+        # writing the main object's corresponding bytes would only change a cache.
+        if PROGRESS_SAVE<=offset and offset+size<=PROGRESS_SAVE+PROGRESS_CAPACITY*4:
+            system=self.memory.u64(self.memory.base+SYSTEM_STATE_RVA)
+            if not 0x10000<system<0x7FFFFFFFFFFF:raise RuntimeError('成就统计尚未载入')
+            return system+PROGRESS_LIVE+offset-PROGRESS_SAVE
+        return self.state+8+offset
 
     def validate(self):
         if struct.unpack('<2I',self.read(0,8))!=(2,2):raise RuntimeError('游戏数据版本无效')
@@ -266,26 +275,23 @@ class Editor:
 
     def achievement_snapshot(self):
         flags=self.read(ACHIEVEMENT_FLAGS,ACHIEVEMENT_CAPACITY)
-        if self.memory:
-            system=self.memory.u64(self.memory.base+SYSTEM_STATE_RVA)
-            if not 0x10000<system<0x7FFFFFFFFFFF:raise RuntimeError('成就统计尚未载入')
-            progress=self.memory.read(system+PROGRESS_LIVE,PROGRESS_CAPACITY*4)
-        else:progress=self.read(PROGRESS_SAVE,PROGRESS_CAPACITY*4)
+        progress=self.read(PROGRESS_SAVE,PROGRESS_CAPACITY*4)
         if any(flags[i] not in (0,1,3) for i in self.achievement_catalog.achievements):
             raise RuntimeError('成就状态格式无效，已拒绝修改')
         return {aid:AchievementState(flags[aid],decode_progress(struct.unpack_from('<I',progress,a.objective*4)[0]))
                 for aid,a in self.achievement_catalog.achievements.items()}
 
-    def complete_achievement(self,aid,include_lower=False):
+    def complete_achievement(self,aid,include_lower=False,sync_progress=True):
         if self.memory:
             self._check_live()
             for rva,original in PROFILE_PROBES:
                 if self.memory.read(self.memory.base+rva,len(original))!=original:
                     raise RuntimeError('游戏成就判定与支持版本不匹配，已拒绝修改')
-        changes=plan_completion(self.achievement_catalog,self.achievement_snapshot(),aid,include_lower)
+        changes=plan_completion(self.achievement_catalog,self.achievement_snapshot(),aid,include_lower,sync_progress)
+        completed=sum(ACHIEVEMENT_FLAGS<=offset<ACHIEVEMENT_FLAGS+ACHIEVEMENT_CAPACITY for offset,_ in changes)
         name=self.achievement_catalog.achievements[aid].name
-        self.apply(f'完成奖励成就：{name}（{len(changes)} 项）',changes)
-        return len(changes)
+        self.apply(f'完成奖励成就：{name}（{completed} 项；同步进度：{sync_progress}）',changes)
+        return completed
 
     def disable_locks(self):
         self.lock_resources={};self.sustain=set()
