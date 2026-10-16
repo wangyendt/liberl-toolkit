@@ -5,6 +5,10 @@ import zstandard as zstd
 from game_data import *
 from win_memory import ProcessMemory, processes
 from fishing import FishingAssist
+from achievements import (AchievementCatalog, AchievementState, ACHIEVEMENT_FLAGS,
+                          ACHIEVEMENT_CAPACITY, PROGRESS_SAVE, PROGRESS_LIVE,
+                          PROGRESS_CAPACITY, SYSTEM_STATE_RVA, PROFILE_PROBES,
+                          decode_progress, plan_completion)
 
 DATA_ROOT = Path.home() / 'AppData/Local/Sora2Trainer'
 
@@ -71,6 +75,7 @@ def backup_saves():
 class Editor:
     def __init__(self,catalog):
         self.catalog=catalog;self.memory=None;self.container=None;self.source=None
+        self.achievement_catalog=AchievementCatalog(catalog.game_dir,catalog.items)
         self.state=None;self.history=[];self.backup=None;self.lock_resources={};self.sustain=set();self.dirty=False;self.fishing=None
         self.audit_dir=DATA_ROOT/'logs';self.audit_dir.mkdir(parents=True,exist_ok=True)
         self.audit_file=self.audit_dir/(datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.jsonl')
@@ -258,6 +263,29 @@ class Editor:
         else:
             changed=bool(self.fishing.owned);self.fishing.disable();self.audit({'action':'fishing_off'})
         return changed
+
+    def achievement_snapshot(self):
+        flags=self.read(ACHIEVEMENT_FLAGS,ACHIEVEMENT_CAPACITY)
+        if self.memory:
+            system=self.memory.u64(self.memory.base+SYSTEM_STATE_RVA)
+            if not 0x10000<system<0x7FFFFFFFFFFF:raise RuntimeError('成就统计尚未载入')
+            progress=self.memory.read(system+PROGRESS_LIVE,PROGRESS_CAPACITY*4)
+        else:progress=self.read(PROGRESS_SAVE,PROGRESS_CAPACITY*4)
+        if any(flags[i] not in (0,1,3) for i in self.achievement_catalog.achievements):
+            raise RuntimeError('成就状态格式无效，已拒绝修改')
+        return {aid:AchievementState(flags[aid],decode_progress(struct.unpack_from('<I',progress,a.objective*4)[0]))
+                for aid,a in self.achievement_catalog.achievements.items()}
+
+    def complete_achievement(self,aid,include_lower=False):
+        if self.memory:
+            self._check_live()
+            for rva,original in PROFILE_PROBES:
+                if self.memory.read(self.memory.base+rva,len(original))!=original:
+                    raise RuntimeError('游戏成就判定与支持版本不匹配，已拒绝修改')
+        changes=plan_completion(self.achievement_catalog,self.achievement_snapshot(),aid,include_lower)
+        name=self.achievement_catalog.achievements[aid].name
+        self.apply(f'完成奖励成就：{name}（{len(changes)} 项）',changes)
+        return len(changes)
 
     def disable_locks(self):
         self.lock_resources={};self.sustain=set()

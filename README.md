@@ -4,7 +4,7 @@
 
 A Chinese-language Windows trainer and save editor for **Trails in the Sky 2nd Chapter**.
 
-面向《空之轨迹 the 2nd》Steam 版的中文修改器：统一管理物品、资源、角色数值、自动钓鱼和存档。
+面向《空之轨迹 the 2nd》Steam 版的中文修改器：统一管理物品、资源、角色数值、奖励成就、自动钓鱼和存档。
 
 ![Liberl Toolkit](docs/images/overview.png)
 
@@ -32,12 +32,27 @@ A Chinese-language Windows trainer and save editor for **Trails in the Sky 2nd C
 | 米拉与耀晶石 | 分别设置米拉、七属性耀晶石及耀晶石块；实时模式支持锁定 |
 | 角色与恢复 | 查看已登记的八名主角，编辑 EXP、当前 HP / EP / CP，一次恢复或持续自动恢复 |
 | 自动钓鱼 | 抛竿后自动提竿、完成收杆；鱼种、尺寸和奖励由游戏决定 |
+| 游戏内成就 | 搜索 221 条 REWARD 奖励成就，查看实际进度和领奖状态，逐项完成或同步完成同系列较低阶段 |
 | 存档与备份 | 编辑存档副本，导出新文件或写入空的手动槽位，备份全部存档，提取备份 |
 | 操作记录 | 修改日志及本次连接的操作撤销 |
 
 物品数量遵守游戏表格上限。剧情道具、服装、发色、装饰和导力器机壳只读；不批量补满稀有素材。
 
 自动恢复每 0.2 秒补充到上限，瞬间致死攻击仍可能生效。EXP 的后续等级结算由游戏处理，不直接改等级、技能或剧情队伍。本版不包含一击必杀、伤害倍率、移动倍速或剧情跳转。
+
+## 游戏内成就
+
+此页面处理游戏的 **REWARD 奖励成就**，不调用 Steam 成就接口。条目和奖励名称从用户安装的游戏表读取；没有奖励的隐藏记录不在列表中。
+
+连接游戏或打开存档后，页面显示“未完成 / 可领奖 / 已领奖”、实际进度、目标和奖励。点击某行的“完成”，或选中后点击“完成选中成就”。默认只完成该条，不会自动完成同系列的其他条目。
+
+勾选“一并完成该系列的较低阶段”，可同时完成该目标之前尚未完成的阶段。比如完成“勇猛突袭150次”时，可连同10次、50次一起完成，250次和400次保持原状态。阶段按目标值排列，正确处理插入在旧编号之间的新阶段。页面显示本次将完成的项数，已完成和已领奖的条目不会重复修改。
+
+修改只设置成就完成标记，实际行动统计、怪物手册、书籍、宝箱和任务记录不会被补满。完成后重新打开游戏的 REWARD 页面，按游戏流程领取奖励；实时修改后在游戏里另存手动存档。存档编辑模式须先导出新文件或保存到空槽位，再回游戏载入并领奖。
+
+领奖状态会保留。领奖前可以撤销本次完成操作；领奖后工具会拒绝覆盖游戏的新状态，撤销不能收回奖励。启用本页不会自动完成任何成就。
+
+![游戏内成就页面（未连接状态）](docs/images/achievements.png)
 
 ## 自动钓鱼
 
@@ -89,14 +104,14 @@ python -m venv .venv
 便于替换 Qt DLL 的目录式构建：
 
 ```powershell
-.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --onedir --windowed --name LiberlToolkit app.py
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --onedir --windowed --name LiberlToolkit --icon assets/liberl-toolkit.ico --add-data "assets/liberl-toolkit.ico;assets" app.py
 ```
 
 目录式构建应使用干净的 CPython 环境，避免在 PATH 中放入其他程序的 ICU 库。
 
-测试不分发游戏资源或存档。没有本机游戏和测试存档时，11 项存档集成测试会跳过，5 项钓鱼补丁测试仍可运行。集成测试默认读取本机 `save065\savedata`，可通过 `LIBERL_TEST_SAVE` 指定一份第二卷尚未拥有的测试存档；不会覆盖原文件。
+测试不分发游戏资源或存档。没有本机游戏和测试存档时，11 项存档集成测试会跳过，15 项奖励成就测试和 5 项钓鱼补丁测试仍可运行。成就测试使用原创合成表和存档，覆盖单项完成、递进阶段、保留领奖状态、撤销冲突、回滚和实时统计来源。集成测试默认读取本机 `save065\savedata`，可通过 `LIBERL_TEST_SAVE` 指定一份第二卷尚未拥有的测试存档；不会覆盖原文件。
 
-`--self-check` 做只读启动检查，结果位于 `%USERPROFILE%\AppData\Local\Sora2Trainer\last-self-check.json`。`--fishing` 打开钓鱼页面；`--auto-fishing` 在连接成功后开启辅助，默认双击不会自动开启。
+`--self-check` 做只读启动检查，结果位于 `%USERPROFILE%\AppData\Local\Sora2Trainer\last-self-check.json`。`--achievements` 打开成就页面。`--fishing` 打开钓鱼页面；`--auto-fishing` 在连接成功后开启辅助，默认双击不会自动开启。
 
 ## 项目与许可
 
@@ -104,4 +119,4 @@ python -m venv .venv
 
 这是独立的玩家工具，与 Falcom 没有隶属关系。游戏与商标归各自权利人所有。
 
-格式调查参考了 [KuroDLCTools 的 FPAC 说明](https://github.com/falco81/KuroDLCTools/blob/main/pac_wcx_plugin/src/src/paclib.pas) 和 [TrailsintheSky1stChapter 的存档格式调查](https://github.com/turtle-insect/TrailsintheSky1stChapter)，并与本机 the 2nd 数据核对。适配记录见 [存档布局](docs/internals/save-layout.md) 和 [钓鱼判定](docs/internals/fishing-layout.md)。
+格式调查参考了 [KuroDLCTools 的 FPAC 说明](https://github.com/falco81/KuroDLCTools/blob/main/pac_wcx_plugin/src/src/paclib.pas) 和 [TrailsintheSky1stChapter 的存档格式调查](https://github.com/turtle-insect/TrailsintheSky1stChapter)，并与本机 the 2nd 数据核对。适配记录见 [存档布局](docs/internals/save-layout.md)、[钓鱼判定](docs/internals/fishing-layout.md) 和 [奖励成就](docs/internals/achievement-layout.md)。

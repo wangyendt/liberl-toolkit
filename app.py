@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QHBoxLayout,QVBo
 from game_data import *
 from backend import Editor,DATA_ROOT,SaveContainer,backup_saves,atomic_file
 from win_memory import processes
+from achievement_ui import AchievementsPage
 
 STYLE='''
 QWidget { font-family: "Microsoft YaHei UI"; font-size: 13px; color:#263e51; }
@@ -38,7 +39,7 @@ QHeaderView::section { background:#e5eff5; color:#3f6077; border:0; border-botto
 QStatusBar { background:#dfeaf1; }
 '''
 
-VERSION='1.2.1'
+VERSION='1.3.0'
 ASSET_ROOT=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/'assets'
 
 def configure_ui(app):
@@ -113,12 +114,12 @@ class Trainer(QMainWindow):
         self.nav=QListWidget();self.nav.setObjectName('nav');rl.addWidget(self.nav,1)
         rl.addWidget(label(f'Steam · {BUILD}\nv{VERSION} · 本地修改',wrap=True));outer.addWidget(rail)
         content=QWidget();content.setObjectName('content');cl=QVBoxLayout(content);cl.setContentsMargins(28,24,28,18);cl.setSpacing(15)
-        cl.addWidget(label('空之轨迹 the 2nd 修改器','title'));cl.addWidget(label('管理物品、资源和角色数值，开启钓鱼辅助，编辑与备份存档。','subtitle'))
+        cl.addWidget(label('空之轨迹 the 2nd 修改器','title'));cl.addWidget(label('管理物品、资源、角色与成就，开启钓鱼辅助，编辑与备份存档。','subtitle'))
         self.connect_btn=button('连接游戏',self.connect_game,True);self.disconnect_btn=button('断开连接',self.disconnect);self.undo_btn=button('撤销上次修改',lambda:self.act(self.editor.undo));self.stop_btn=button('关闭全部持续修改',self.stop_locks)
         cl.addLayout(row(self.connect_btn,self.disconnect_btn,self.undo_btn,self.stop_btn));self.status=label('尚未连接游戏','status');cl.addWidget(self.status)
         self.stack=QStackedWidget();cl.addWidget(self.stack,1);outer.addWidget(content,1)
         self.page_indexes={}
-        for key,title,maker in [('items','物品与装备',self.items_page),('resources','米拉与耀晶石',self.resources_page),('characters','角色与恢复',self.characters_page),('fishing','自动钓鱼',self.fishing_page),('saves','存档与备份',self.saves_page),('logs','操作记录',self.logs_page)]:
+        for key,title,maker in [('items','物品与装备',self.items_page),('resources','米拉与耀晶石',self.resources_page),('characters','角色与恢复',self.characters_page),('fishing','自动钓鱼',self.fishing_page),('achievements','游戏内成就',self.achievements_page),('saves','存档与备份',self.saves_page),('logs','操作记录',self.logs_page)]:
             self.page_indexes[key]=len(self.pages);self.nav.addItem(title)
             page=maker();self.stack.addWidget(page);self.pages.append(page)
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex);self.nav.setCurrentRow(0)
@@ -142,6 +143,10 @@ class Trainer(QMainWindow):
         self.proxy.text=self.search.text().strip().lower();self.proxy.category=self.category.currentText();self.proxy.owned=self.owned.isChecked();self.proxy.refresh()
 
     def focus_search(self):self.nav.setCurrentRow(self.page_indexes['items']);self.search.setFocus();self.search.selectAll()
+
+    def achievements_page(self):
+        self.achievement_page=AchievementsPage(self)
+        return self.achievement_page
 
     def select_item(self,*_):
         indexes=self.item_table.selectionModel().selectedRows()
@@ -280,11 +285,13 @@ class Trainer(QMainWindow):
     def refresh(self):
         if self.editor.mode:
             inv=self.editor.inventory();self.model.update(inv);self.filter_items()
+            self.achievement_page.refresh(self.editor.achievement_snapshot())
             for widget,value in zip(self.resource_current,self.editor.resources()):widget.setText(f'{value:,}')
             self.char_model.update(self.editor.characters())
             self.status.setText(f'实时连接 · PID {self.editor.memory.pid} · Steam 构建 {BUILD}' if self.editor.mode=='live' else f'存档编辑 · {self.editor.source.parent.name} · {self.editor.container.title}')
         else:
             self.status.setText('尚未连接游戏');self.model.update({});self.char_model.update([])
+            self.achievement_page.refresh({})
             for widget in self.resource_current:widget.setText('—')
         self.update_enabled()
 
@@ -295,6 +302,7 @@ class Trainer(QMainWindow):
         self.export_btn.setEnabled(save);self.slot_btn.setEnabled(save)
         for w in self.resource_locks+self.sustain_checks+[self.fishing_check]:w.setEnabled(live)
         self.item_write.setEnabled(bool(active and self.selected_item and not self.selected_item.protected))
+        self.achievement_page.update_enabled()
 
     def tick(self):
         try:self.editor.tick()
@@ -308,6 +316,7 @@ class Trainer(QMainWindow):
             inv=self.editor.inventory();self.model.update(inv)
             for widget,value in zip(self.resource_current,self.editor.resources()):widget.setText(f'{value:,}')
             self.char_model.update(self.editor.characters())
+            self.achievement_page.refresh(self.editor.achievement_snapshot())
         except Exception as error:
             self.stop_locks()
             try:self.editor.close();self.refresh();self.note(f'连接已停止：{error}')
@@ -410,7 +419,7 @@ def main():
                 if saves:window.editor.open_save(saves[0])
             if window.editor.mode:window.initialize_inputs()
             window.refresh()
-            result={'ok':True,'mode':window.editor.mode or 'idle','items':len(window.catalog.items),'owned_items':sum(qty>0 for qty,flags in window.editor.inventory().values()) if window.editor.mode else None,'pid':window.editor.memory.pid if window.editor.memory else None,'characters':len(window.editor.characters()) if window.editor.mode else 0,'default_page':window.nav.currentItem().text()}
+            result={'ok':True,'mode':window.editor.mode or 'idle','items':len(window.catalog.items),'owned_items':sum(qty>0 for qty,flags in window.editor.inventory().values()) if window.editor.mode else None,'pid':window.editor.memory.pid if window.editor.memory else None,'characters':len(window.editor.characters()) if window.editor.mode else 0,'default_page':window.nav.currentItem().text(),'reward_achievements':len(window.editor.achievement_catalog.achievements)}
             from fishing import FISHING_PATCHES
             if window.editor.memory:
                 result['fishing_profile_verified']=all(window.editor.memory.read(window.editor.memory.base+p.rva,len(p.original))==p.original for p in FISHING_PATCHES)
@@ -424,6 +433,7 @@ def main():
             (DATA_ROOT/'last-self-check.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
             window.editor.close();window.close();return 0
         window=Trainer(game_dir,auto_connect=bool(processes()))
+        if '--achievements' in sys.argv:window.nav.setCurrentRow(window.page_indexes['achievements'])
         if '--fishing' in sys.argv or '--auto-fishing' in sys.argv:window.nav.setCurrentRow(window.page_indexes['fishing'])
         if '--auto-fishing' in sys.argv:
             def enable_fishing():
