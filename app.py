@@ -39,7 +39,7 @@ QHeaderView::section { background:#e5eff5; color:#3f6077; border:0; border-botto
 QStatusBar { background:#dfeaf1; }
 '''
 
-VERSION='1.3.1'
+VERSION='1.3.2'
 ASSET_ROOT=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/'assets'
 
 def configure_ui(app):

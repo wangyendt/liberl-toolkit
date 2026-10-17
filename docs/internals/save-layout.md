@@ -17,6 +17,8 @@
 
 第二卷编号 373；其背包条目在解压存档 `0x129018`。添加时 qty=1，flags 保留原位并 OR 3（NEW / possession history）；与已拥有第一、三、四、五、六卷的 flags=3 一致。玩家在游戏中确认了第二卷出现。
 
+背包 flags 的已观测有效位为 `0x1F`。本机 `save015`、`save016` 等通过 CRC 校验的存档中，编号 2100～2304 的部分条目包含 `0x10` 位，出现 `0x11`、`0x13`、`0x17`、`0x1F` 等值；该位具体含义尚未确认。旧版以 `0x0F` 校验会误拒绝这些存档。读取时接受低五位，修改数量时保留原 flags；仍拒绝超过 9999 的数量及低五位以外的标记，并在错误中报告物品编号、名称、数量和 flags。
+
 CRC 初始值是 payload 长度 `0x20BD44`，对 raw[12:] 使用 reflected CRC-32 多项式 `0xEDB88320`，不加最终 XOR。用 zlib 的接口等价表达为 `crc32(raw[12:], n ^ 0xFFFFFFFF) ^ 0xFFFFFFFF`，n=len(raw)-12。由 EXE `0x43D5C3` 起的 checksum 循环和真实存档对照确认。
 
 外层封装头：5 个 little-endian uint64：数据偏移(40)、压缩长度、PNG 偏移、PNG 长度、说明文字偏移。Zstandard 解压长度固定为 0x20BD50。说明文字不属于 CRC 范围。
