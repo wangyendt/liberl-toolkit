@@ -1,9 +1,95 @@
 import os, sys, unittest, tempfile, struct
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from backend import Editor, SaveContainer, checksum
-from game_data import Catalog,DEFAULT_GAME,SAVE_ROOT,INVENTORY,RESOURCES
+from game_data import (Catalog,DEFAULT_GAME,SAVE_ROOT,INVENTORY,RESOURCES,
+                       RAW_SIZE,CHARACTERS,CHAR_STRIDE,Item)
+
+
+class InventoryValidationTests(unittest.TestCase):
+    """Synthetic fixtures keep the regression runnable without game assets."""
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory()
+        self.root=Path(self.temp.name)
+        self.data_patch=patch('backend.DATA_ROOT',self.root/'appdata')
+        self.data_patch.start()
+        catalog=SimpleNamespace(game_dir=self.root,characters={},items={
+            373:Item(373,'测试书籍','',2,13,1,0),
+            2100:Item(2100,'测试食材','',20,7,99,0),
+        })
+        with patch('backend.AchievementCatalog'):
+            self.ed=Editor(catalog)
+        self.container=SaveContainer.__new__(SaveContainer)
+        self.container.raw=bytearray(RAW_SIZE)
+        self.container.image=b'\x89PNG\r\n\x1a\nsynthetic image'
+        self.container.metadata=b''
+        struct.pack_into('<2I',self.container.raw,0,2,2)
+        struct.pack_into('<9I',self.container.raw,CHARACTERS+CHAR_STRIDE,
+                         0,50,0,100,100,20,20,0,200)
+        self.source=self.root/'savedata'
+
+    def tearDown(self):
+        self.ed.close();self.data_patch.stop();self.temp.cleanup()
+
+    def write_save(self,qty,flags):
+        struct.pack_into('<HH',self.container.raw,INVENTORY+2100*4,qty,flags)
+        self.source.write_bytes(self.container.encode())
+        return self.source.read_bytes()
+
+    def test_open_accepts_all_low_five_flag_bits_without_changing_source(self):
+        for flags in range(0x20):
+            with self.subTest(flags=hex(flags)):
+                original=self.write_save(9,flags)
+                self.ed.open_save(self.source)
+                self.assertEqual(self.ed.inventory()[2100],(9,flags))
+                self.assertFalse(self.ed.dirty)
+                self.assertEqual(self.source.read_bytes(),original)
+
+    def test_item_edit_export_and_undo_preserve_existing_flags(self):
+        for flags in (0x10,0x11,0x13,0x17,0x1C,0x1F):
+            with self.subTest(flags=hex(flags)):
+                original=self.write_save(9,flags)
+                self.ed.open_save(self.source)
+                self.ed.backup=self.root/'fixture-backup.zip'
+                before=bytes(self.ed.container.raw)
+                self.ed.set_item(2100,10)
+                encoded=SaveContainer(self.ed.container.encode())
+                self.assertEqual(struct.unpack_from('<HH',encoded.raw,INVENTORY+2100*4),(10,flags|3))
+                changed={i for i,(a,b) in enumerate(zip(before,encoded.raw)) if a!=b}
+                self.assertTrue(changed<=set(range(8,12))|set(range(INVENTORY+2100*4,INVENTORY+2100*4+4)))
+                self.ed.undo()
+                self.assertEqual(bytes(self.ed.container.raw),before)
+                self.assertEqual(self.source.read_bytes(),original)
+
+    def test_bulk_edits_preserve_high_flag_bit(self):
+        struct.pack_into('<HH',self.container.raw,INVENTORY+373*4,0,0x10)
+        self.write_save(9,0x1F)
+        self.ed.open_save(self.source)
+        self.ed.backup=self.root/'fixture-backup.zip'
+        self.ed.refill();self.ed.add_jack()
+        self.assertEqual(self.ed.inventory()[2100],(99,0x1F))
+        self.assertEqual(self.ed.inventory()[373],(1,0x13))
+        self.ed.validate()
+
+    def test_unknown_flag_bits_are_rejected_with_item_details(self):
+        for bit in range(5,16):
+            with self.subTest(bit=bit):
+                original=self.write_save(9,1<<bit)
+                with self.assertRaisesRegex(RuntimeError,f'物品 2100.*测试食材.*数量 9.*0x{1<<bit:04X}'):
+                    self.ed.open_save(self.source)
+                self.assertIsNone(self.ed.mode)
+                self.assertEqual(self.source.read_bytes(),original)
+
+    def test_excess_quantity_still_rejected(self):
+        self.write_save(9999,0x1F)
+        self.ed.open_save(self.source)
+        original=self.write_save(10000,0x1F)
+        with self.assertRaisesRegex(RuntimeError,'物品 2100.*数量 10000.*0x001F'):
+            self.ed.open_save(self.source)
+        self.assertIsNone(self.ed.mode)
+        self.assertEqual(self.source.read_bytes(),original)
 
 class SaveEditingTests(unittest.TestCase):
     @classmethod

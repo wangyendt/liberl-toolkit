@@ -154,7 +154,10 @@ class Editor:
         inv=self.read(INVENTORY,5000*4)
         for item in self.catalog.items.values():
             qty,flags=struct.unpack_from('<HH',inv,item.id*4)
-            if qty>9999 or flags&~0xF:raise RuntimeError('背包结构校验失败，拒绝修改')
+            # Real saves also use bit 0x10 (e.g. flags 0x17 / 0x1F).
+            # Keep all five observed bits; item edits preserve existing flags.
+            if qty>9999 or flags&~0x1F:
+                raise RuntimeError(f'背包结构校验失败，拒绝修改：物品 {item.id}（{item.name}），数量 {qty}，标记 0x{flags:04X}')
         if any(v>9999999 for v in self.resources()):raise RuntimeError('资源结构校验失败')
 
     def audit(self,event):
