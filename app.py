@@ -39,7 +39,7 @@ QHeaderView::section { background:#e5eff5; color:#3f6077; border:0; border-botto
 QStatusBar { background:#dfeaf1; }
 '''
 
-VERSION='1.3.2'
+VERSION='1.4.0'
 ASSET_ROOT=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/'assets'
 
 def configure_ui(app):
@@ -98,7 +98,7 @@ class ItemFilter(QSortFilterProxyModel):
 class Trainer(QMainWindow):
     def __init__(self,game_dir=DEFAULT_GAME,auto_connect=False):
         super().__init__();self.setWindowTitle(f'Liberl Toolkit · 空之轨迹 the 2nd v{VERSION}');self.resize(1190,820);self.setMinimumSize(1040,740)
-        self.catalog=Catalog(game_dir);self.editor=Editor(self.catalog);self.loading=False;self.resource_inputs=[];self.resource_locks=[];self.char_rows=[];self.selected_item=None;self.pages=[]
+        self.catalog=Catalog(game_dir);self.editor=Editor(self.catalog);self.loading=False;self.resource_inputs=[];self.resource_locks=[];self.char_rows=[];self.selected_items=[];self.pages=[]
         self._build();self.refresh_saves();self.refresh_backups()
         self.timer=QTimer(self);self.timer.timeout.connect(self.tick);self.timer.start(200)
         self.refresh_timer=QTimer(self);self.refresh_timer.timeout.connect(self.poll);self.refresh_timer.start(2000)
@@ -132,10 +132,12 @@ class Trainer(QMainWindow):
     def items_page(self):
         w,v=self.page();self.search=QLineEdit();self.search.setPlaceholderText('搜索物品名称、分类或编号（Ctrl+F）');self.category=QComboBox();self.category.addItems(['全部分类']+sorted({x.category for x in self.catalog.items.values()}));self.owned=QCheckBox('仅看已拥有')
         v.addLayout(row(self.search,self.category,self.owned));self.model=ItemModel(self.catalog);self.proxy=ItemFilter();self.proxy.setSourceModel(self.model)
-        self.item_table=QTableView();self.item_table.setModel(self.proxy);self.item_table.setSelectionBehavior(QAbstractItemView.SelectRows);self.item_table.setSelectionMode(QAbstractItemView.SingleSelection);self.item_table.setEditTriggers(QAbstractItemView.NoEditTriggers);self.item_table.verticalHeader().hide();self.item_table.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch);self.item_table.setColumnWidth(0,65);self.item_table.setColumnWidth(2,100);self.item_table.setColumnWidth(3,65);self.item_table.setColumnWidth(4,65);self.item_table.setColumnWidth(5,70);v.addWidget(self.item_table,1)
-        self.item_desc=label('选择一个物品，查看描述并设置数量。','muted',True);v.addWidget(self.item_desc)
+        self.item_table=QTableView();self.item_table.setModel(self.proxy);self.item_table.setSelectionBehavior(QAbstractItemView.SelectRows);self.item_table.setSelectionMode(QAbstractItemView.ExtendedSelection);self.item_table.setEditTriggers(QAbstractItemView.NoEditTriggers);self.item_table.verticalHeader().hide();self.item_table.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch);self.item_table.setColumnWidth(0,65);self.item_table.setColumnWidth(2,100);self.item_table.setColumnWidth(3,65);self.item_table.setColumnWidth(4,65);self.item_table.setColumnWidth(5,70);v.addWidget(self.item_table,1)
+        self.item_selection=label('已选 0 项','muted')
+        v.addLayout(row(self.item_selection,button('全选当前结果',self.item_table.selectAll),button('清除选择',self.item_table.clearSelection)))
+        self.item_desc=label('选择物品查看描述；按 Ctrl 点选多项，按 Shift 连选，Ctrl+A 全选当前结果。','muted',True);v.addWidget(self.item_desc)
         self.item_qty=QSpinBox();self.item_qty.setRange(0,999);self.item_qty.setFixedWidth(100);self.item_write=button('设置数量',self.write_item,True);self.refill_btn=button('补满已有消耗品 / 食材 / 鱼饵',lambda:self.act(self.editor.refill));v.addLayout(row('目标数量',self.item_qty,self.item_write,self.refill_btn))
-        v.addWidget(label('数量按游戏物品表限制。剧情道具、服装、发色、装饰和机壳只读。','muted',True))
+        v.addWidget(label('批量设置时，超出各物品上限的数量按上限设置，只读物品自动跳过。一次撤销可还原整批修改。','muted',True))
         for signal in [self.search.textChanged,self.category.currentTextChanged,self.owned.toggled]:signal.connect(self.filter_items)
         self.item_table.selectionModel().selectionChanged.connect(self.select_item);return w
 
@@ -150,15 +152,27 @@ class Trainer(QMainWindow):
 
     def select_item(self,*_):
         indexes=self.item_table.selectionModel().selectedRows()
-        if not indexes:self.selected_item=None;self.item_write.setEnabled(False);return
-        it=self.model.items[self.proxy.mapToSource(indexes[0]).row()];self.selected_item=it
-        qty=self.model.quantities.get(it.id,(0,0))[0]
-        self.item_qty.setRange(0,max(0,min(it.cap,999)));self.item_qty.setValue(min(qty,self.item_qty.maximum()))
-        self.item_desc.setText(f'{it.name} · 编号 {it.id}\n{it.description}'+('\n此分类仅供查看。' if it.protected else ''))
-        self.item_write.setEnabled(bool(self.editor.mode and not it.protected))
+        self.selected_items=[self.model.items[self.proxy.mapToSource(index).row()] for index in indexes]
+        editable=sum(not it.protected for it in self.selected_items)
+        self.item_selection.setText(f'已选 {len(indexes)} 项 · 可修改 {editable} 项 · 只读 {len(indexes)-editable} 项')
+        self.item_write.setText(f'设置选中 {editable} 项' if len(indexes)>1 else '设置数量')
+        enabled=bool(self.editor.mode and editable)
+        self.item_write.setEnabled(enabled);self.item_qty.setEnabled(enabled)
+        if not indexes:
+            self.item_desc.setText('选择物品查看描述；按 Ctrl 点选多项，按 Shift 连选，Ctrl+A 全选当前结果。')
+        elif len(indexes)==1:
+            it=self.selected_items[0];qty=self.model.quantities.get(it.id,(0,0))[0]
+            self.item_qty.setRange(0,max(0,min(it.cap,999)));self.item_qty.setValue(min(qty,self.item_qty.maximum()))
+            self.item_desc.setText(f'{it.name} · 编号 {it.id}\n{it.description}'+('\n此分类仅供查看。' if it.protected else ''))
+        else:
+            self.item_qty.setRange(0,999)
+            names='、'.join(it.name for it in self.selected_items[:5])+(' 等' if len(indexes)>5 else '')
+            self.item_desc.setText(f'{names}\n统一设置目标数量，每项按各自上限处理；只读物品自动跳过。')
 
     def write_item(self):
-        if self.selected_item:self.act(lambda:self.editor.set_item(self.selected_item.id,self.item_qty.value()))
+        ids=[it.id for it in self.selected_items];qty=self.item_qty.value()
+        if len(ids)==1:self.act(lambda:self.editor.set_item(ids[0],qty))
+        elif ids:self.act(lambda:self.editor.set_items(ids,qty))
 
     def resources_page(self):
         w,v=self.page();box=QGroupBox('设置资源数量');g=QGridLayout(box)
@@ -301,7 +315,8 @@ class Trainer(QMainWindow):
         self.disconnect_btn.setEnabled(active);self.undo_btn.setEnabled(bool(self.editor.history));self.stop_btn.setEnabled(live)
         self.export_btn.setEnabled(save);self.slot_btn.setEnabled(save)
         for w in self.resource_locks+self.sustain_checks+[self.fishing_check]:w.setEnabled(live)
-        self.item_write.setEnabled(bool(active and self.selected_item and not self.selected_item.protected))
+        editable=any(not it.protected for it in self.selected_items)
+        self.item_write.setEnabled(bool(active and editable));self.item_qty.setEnabled(bool(active and editable))
         self.achievement_page.update_enabled()
 
     def tick(self):

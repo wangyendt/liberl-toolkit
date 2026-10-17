@@ -16,8 +16,10 @@ class InventoryValidationTests(unittest.TestCase):
         self.data_patch=patch('backend.DATA_ROOT',self.root/'appdata')
         self.data_patch.start()
         catalog=SimpleNamespace(game_dir=self.root,characters={},items={
+            201:Item(201,'测试剧情道具','',2,0,99,0),
             373:Item(373,'测试书籍','',2,13,1,0),
             2100:Item(2100,'测试食材','',20,7,99,0),
+            2101:Item(2101,'测试食材二','',20,7,10,0),
         })
         with patch('backend.AchievementCatalog'):
             self.ed=Editor(catalog)
@@ -90,6 +92,67 @@ class InventoryValidationTests(unittest.TestCase):
             self.ed.open_save(self.source)
         self.assertIsNone(self.ed.mode)
         self.assertEqual(self.source.read_bytes(),original)
+
+    def test_selected_batch_caps_each_item_skips_readonly_and_undoes_once(self):
+        struct.pack_into('<HH',self.container.raw,INVENTORY+201*4,4,0x10)
+        struct.pack_into('<HH',self.container.raw,INVENTORY+373*4,0,0x10)
+        original=self.write_save(9,0x1C)
+        self.ed.open_save(self.source)
+        before=bytes(self.ed.container.raw)
+        with patch('backend.backup_saves',return_value=self.root/'backup.zip') as backup:
+            self.assertTrue(self.ed.set_items([373,2100,201,373],99))
+            backup.assert_called_once()
+        self.assertEqual(self.ed.inventory()[373],(1,0x13))
+        self.assertEqual(self.ed.inventory()[2100],(99,0x1F))
+        self.assertEqual(self.ed.inventory()[201],(4,0x10))
+        self.assertEqual(self.ed.inventory()[2101],(0,0))
+        self.assertEqual(len(self.ed.history),1)
+        self.assertEqual(len(self.ed.history[0][1]),2)
+        decoded=SaveContainer(self.ed.container.encode())
+        allowed=set(range(8,12))|set(range(INVENTORY+373*4,INVENTORY+373*4+4))|set(range(INVENTORY+2100*4,INVENTORY+2100*4+4))
+        changed={i for i,(a,b) in enumerate(zip(before,decoded.raw)) if a!=b}
+        self.assertTrue(changed<=allowed)
+        self.ed.undo()
+        self.assertEqual(bytes(self.ed.container.raw),before)
+        self.assertEqual(self.source.read_bytes(),original)
+
+    def test_selected_batch_zero_preserves_flags_and_noop_creates_no_history(self):
+        self.write_save(9,0x1F)
+        self.ed.open_save(self.source)
+        self.ed.backup=self.root/'backup.zip'
+        self.assertTrue(self.ed.set_items([2100,2101],0))
+        self.assertEqual(self.ed.inventory()[2100],(0,0x1F))
+        self.assertFalse(self.ed.set_items([2100,2101],0))
+        self.assertEqual(len(self.ed.history),1)
+
+    def test_selected_batch_invalid_requests_never_write(self):
+        self.write_save(9,0x1F)
+        self.ed.open_save(self.source)
+        before=bytes(self.ed.container.raw)
+        with patch.object(self.ed,'_write') as write,patch('backend.backup_saves') as backup:
+            for ids,qty in [([],1),([201],1),([2100,99999],1),([2100],-1),([2100],1000),([2100],1.5)]:
+                with self.subTest(ids=ids,qty=qty),self.assertRaises(ValueError):
+                    self.ed.set_items(ids,qty)
+            write.assert_not_called();backup.assert_not_called()
+        self.assertEqual(bytes(self.ed.container.raw),before)
+        self.assertFalse(self.ed.history)
+
+    def test_selected_batch_rolls_back_earlier_items_on_write_failure(self):
+        self.write_save(9,0x1F)
+        self.ed.open_save(self.source)
+        self.ed.backup=self.root/'backup.zip'
+        before=bytes(self.ed.container.raw)
+        original_write=self.ed._write;calls=0
+        def fail_second(offset,data):
+            nonlocal calls
+            calls+=1
+            if calls==2:raise RuntimeError('simulated batch failure')
+            original_write(offset,data)
+        with patch.object(self.ed,'_write',side_effect=fail_second):
+            with self.assertRaisesRegex(RuntimeError,'simulated batch failure'):
+                self.ed.set_items([373,2100],99)
+        self.assertEqual(bytes(self.ed.container.raw),before)
+        self.assertFalse(self.ed.history)
 
 class SaveEditingTests(unittest.TestCase):
     @classmethod

@@ -218,6 +218,21 @@ class Editor:
         if qty>oldqty:flags|=3  # The game's NEW and possession-history bits.
         return self.apply(f'{item.name} → {qty}',[(a,struct.pack('<HH',qty,flags))])
 
+    def set_items(self,iids,qty):
+        if not isinstance(qty,int) or not 0<=qty<=999:raise ValueError('目标数量应为 0～999')
+        ids=list(dict.fromkeys(iids))
+        if not ids:raise ValueError('请先选择物品')
+        if any(iid not in self.catalog.items for iid in ids):raise ValueError('选中的物品编号无效，请刷新后重试')
+        items=[self.catalog.items[iid] for iid in ids if not self.catalog.items[iid].protected]
+        if not items:raise ValueError('选中的物品均为只读，无法修改')
+        changes=[]
+        for item in items:
+            target=min(qty,item.cap)
+            a=INVENTORY+item.id*4;oldqty,flags=struct.unpack('<HH',self.read(a,4))
+            if target>oldqty:flags|=3
+            changes.append((a,struct.pack('<HH',target,flags)))
+        return self.apply(f'批量设置 {len(items)} 项物品 → {qty}（按各自上限）',changes)
+
     def add_jack(self,all_volumes=False):
         ids=range(372,386) if all_volumes else [373];changes=[]
         for iid in ids:
