@@ -32,6 +32,7 @@ BUILD = '25721473'
 EXE_SHA256 = 'cab62e5872222efb2aaf272be47f14263db4e7132ad7df5255db8efbee9959ea'
 RAW_SIZE = 0x20BD50
 INVENTORY = 0x128A44
+ITEM_QUANTITY_MAX = 9999
 CHARACTERS = 0x1142F0
 CHAR_STRIDE = 672
 RESOURCES = 0x20B620
@@ -100,8 +101,9 @@ class Item:
 
     @property
     def protected(self):
-        # Quest flags are not inventory. DLC and costumes are deliberately excluded.
-        return self.category_id == 2 and self.subcategory not in [13,30] or self.category_id in [0,15,16,17,19] or not 0 < self.cap <= 999
+        # Resources, quest state, attachments and orbment covers remain read-only.
+        # Costumes and hair colors use their table's stack cap (currently 1).
+        return self.category_id == 2 and self.subcategory not in [13,30] or self.category_id in [0,17,19] or not 0 < self.cap <= ITEM_QUANTITY_MAX
 
 class Catalog:
     def __init__(self, game_dir=DEFAULT_GAME):

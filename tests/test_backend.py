@@ -16,8 +16,13 @@ class InventoryValidationTests(unittest.TestCase):
         self.data_patch=patch('backend.DATA_ROOT',self.root/'appdata')
         self.data_patch.start()
         catalog=SimpleNamespace(game_dir=self.root,characters={},items={
+            80:Item(80,'测试素材','',20,5,9999,0),
+            201:Item(201,'测试剧情道具','',2,0,99,0),
             373:Item(373,'测试书籍','',2,13,1,0),
             2100:Item(2100,'测试食材','',20,7,99,0),
+            2101:Item(2101,'测试食材二','',20,7,10,0),
+            2500:Item(2500,'测试服装','',15,0,1,0),
+            3300:Item(3300,'测试发色','',16,0,1,0),
         })
         with patch('backend.AchievementCatalog'):
             self.ed=Editor(catalog)
@@ -91,6 +96,146 @@ class InventoryValidationTests(unittest.TestCase):
         self.assertIsNone(self.ed.mode)
         self.assertEqual(self.source.read_bytes(),original)
 
+    def test_selected_batch_caps_each_item_skips_readonly_and_undoes_once(self):
+        struct.pack_into('<HH',self.container.raw,INVENTORY+201*4,4,0x10)
+        struct.pack_into('<HH',self.container.raw,INVENTORY+373*4,0,0x10)
+        original=self.write_save(9,0x1C)
+        self.ed.open_save(self.source)
+        before=bytes(self.ed.container.raw)
+        with patch('backend.backup_saves',return_value=self.root/'backup.zip') as backup:
+            self.assertTrue(self.ed.set_items([373,2100,201,373],99))
+            backup.assert_called_once()
+        self.assertEqual(self.ed.inventory()[373],(1,0x13))
+        self.assertEqual(self.ed.inventory()[2100],(99,0x1F))
+        self.assertEqual(self.ed.inventory()[201],(4,0x10))
+        self.assertEqual(self.ed.inventory()[2101],(0,0))
+        self.assertEqual(len(self.ed.history),1)
+        self.assertEqual(len(self.ed.history[0][1]),2)
+        decoded=SaveContainer(self.ed.container.encode())
+        allowed=set(range(8,12))|set(range(INVENTORY+373*4,INVENTORY+373*4+4))|set(range(INVENTORY+2100*4,INVENTORY+2100*4+4))
+        changed={i for i,(a,b) in enumerate(zip(before,decoded.raw)) if a!=b}
+        self.assertTrue(changed<=allowed)
+        self.ed.undo()
+        self.assertEqual(bytes(self.ed.container.raw),before)
+        self.assertEqual(self.source.read_bytes(),original)
+
+    def test_selected_batch_zero_preserves_flags_and_noop_creates_no_history(self):
+        self.write_save(9,0x1F)
+        self.ed.open_save(self.source)
+        self.ed.backup=self.root/'backup.zip'
+        self.assertTrue(self.ed.set_items([2100,2101],0))
+        self.assertEqual(self.ed.inventory()[2100],(0,0x1F))
+        self.assertFalse(self.ed.set_items([2100,2101],0))
+        self.assertEqual(len(self.ed.history),1)
+
+    def test_selected_batch_invalid_requests_never_write(self):
+        self.write_save(9,0x1F)
+        self.ed.open_save(self.source)
+        before=bytes(self.ed.container.raw)
+        with patch.object(self.ed,'_write') as write,patch('backend.backup_saves') as backup:
+            for ids,qty in [([],1),([201],1),([2100,99999],1),([2100],-1),([2100],10000),([2100],1.5)]:
+                with self.subTest(ids=ids,qty=qty),self.assertRaises(ValueError):
+                    self.ed.set_items(ids,qty)
+            write.assert_not_called();backup.assert_not_called()
+        self.assertEqual(bytes(self.ed.container.raw),before)
+        self.assertFalse(self.ed.history)
+
+    def test_selected_batch_rolls_back_earlier_items_on_write_failure(self):
+        self.write_save(9,0x1F)
+        self.ed.open_save(self.source)
+        self.ed.backup=self.root/'backup.zip'
+        before=bytes(self.ed.container.raw)
+        original_write=self.ed._write;calls=0
+        def fail_second(offset,data):
+            nonlocal calls
+            calls+=1
+            if calls==2:raise RuntimeError('simulated batch failure')
+            original_write(offset,data)
+        with patch.object(self.ed,'_write',side_effect=fail_second):
+            with self.assertRaisesRegex(RuntimeError,'simulated batch failure'):
+                self.ed.set_items([373,2100],99)
+        self.assertEqual(bytes(self.ed.container.raw),before)
+        self.assertFalse(self.ed.history)
+
+    def test_material_single_and_mixed_batch_edits_support_9999(self):
+        self.assertFalse(self.ed.catalog.items[80].protected)
+        original=self.write_save(9,0x1F)
+        self.ed.open_save(self.source)
+        self.ed.backup=self.root/'backup.zip'
+        before=bytes(self.ed.container.raw)
+        self.ed.set_item(80,9999)
+        self.assertEqual(self.ed.inventory()[80],(9999,3))
+        self.ed.undo()
+        self.assertEqual(bytes(self.ed.container.raw),before)
+        self.ed.set_items([80,373,2100],9999)
+        self.assertEqual(self.ed.inventory()[80],(9999,3))
+        self.assertEqual(self.ed.inventory()[373],(1,3))
+        self.assertEqual(self.ed.inventory()[2100],(99,0x1F))
+        self.ed.validate()
+        self.ed.undo()
+        self.assertEqual(bytes(self.ed.container.raw),before)
+        self.assertEqual(self.source.read_bytes(),original)
+
+    def test_material_limit_and_refill_exclusion(self):
+        struct.pack_into('<HH',self.container.raw,INVENTORY+80*4,12,0x1F)
+        self.write_save(9,3)
+        self.ed.open_save(self.source)
+        self.ed.backup=self.root/'backup.zip'
+        for edit in (lambda:self.ed.set_item(80,10000),lambda:self.ed.set_items([80],10000)):
+            with self.assertRaises(ValueError):edit()
+        self.ed.refill()
+        self.assertEqual(self.ed.inventory()[80],(12,0x1F))
+        for category in (0,17,19):
+            self.assertTrue(Item(99,'只读','',category,0,9999,0).protected)
+        self.assertTrue(Item(99,'无效上限','',20,5,10000,0).protected)
+
+    def test_cosmetic_single_edits_preserve_flags_export_and_undo(self):
+        for iid in (2500,3300):
+            with self.subTest(iid=iid):
+                self.assertFalse(self.ed.catalog.items[iid].protected)
+                a=INVENTORY+iid*4
+                struct.pack_into('<HH',self.container.raw,a,0,0x10)
+                original=self.write_save(9,3)
+                self.ed.open_save(self.source)
+                self.ed.backup=self.root/'backup.zip'
+                before=bytes(self.ed.container.raw)
+                self.ed.set_item(iid,1)
+                decoded=SaveContainer(self.ed.container.encode())
+                self.assertEqual(struct.unpack_from('<HH',decoded.raw,a),(1,0x13))
+                changed={i for i,(old,new) in enumerate(zip(before,decoded.raw)) if old!=new}
+                self.assertTrue(changed<=set(range(8,12))|set(range(a,a+4)))
+                self.ed.undo()
+                self.assertEqual(bytes(self.ed.container.raw),before)
+                self.assertEqual(self.source.read_bytes(),original)
+
+    def test_cosmetic_limits_mixed_batch_and_refill_exclusion(self):
+        self.write_save(9,3)
+        self.ed.open_save(self.source)
+        self.ed.backup=self.root/'backup.zip'
+        before=bytes(self.ed.container.raw)
+        for iid in (2500,3300):
+            for qty in (-1,2):
+                with self.subTest(iid=iid,qty=qty),self.assertRaises(ValueError):
+                    self.ed.set_item(iid,qty)
+        self.assertEqual(bytes(self.ed.container.raw),before)
+        self.assertFalse(self.ed.history)
+        self.ed.refill()
+        self.assertEqual(self.ed.inventory()[2500],(0,0))
+        self.assertEqual(self.ed.inventory()[3300],(0,0))
+        self.ed.undo()
+        self.ed.set_items([2500,3300,2100,201],9999)
+        self.assertEqual(self.ed.inventory()[2500],(1,3))
+        self.assertEqual(self.ed.inventory()[3300],(1,3))
+        self.assertEqual(self.ed.inventory()[2100],(99,3))
+        self.assertEqual(self.ed.inventory()[201],(0,0))
+        self.assertEqual(len(self.ed.history),1)
+        self.ed.undo()
+        self.assertEqual(bytes(self.ed.container.raw),before)
+        self.ed.set_items([2500,3300],1)
+        self.ed.set_items([2500,3300],0)
+        self.assertEqual(self.ed.inventory()[2500],(0,3))
+        self.assertEqual(self.ed.inventory()[3300],(0,3))
+
 class SaveEditingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -111,6 +256,20 @@ class SaveEditingTests(unittest.TestCase):
         self.assertIn('赌博师杰克',item.name)
         self.assertEqual(item.cap,1)
         self.assertEqual(item.category,'书籍')
+    def test_material_limits_from_actual_game_table(self):
+        for iid in (80,81,82):
+            with self.subTest(iid=iid):
+                item=self.catalog.items[iid]
+                self.assertEqual(item.category,'素材')
+                self.assertEqual(item.cap,9999)
+                self.assertFalse(item.protected)
+                before=bytes(self.ed.container.raw)
+                changed=self.ed.set_item(iid,9999)
+                self.assertEqual(self.ed.inventory()[iid][0],9999)
+                self.ed.validate()
+                if changed:self.ed.undo()
+                self.assertEqual(bytes(self.ed.container.raw),before)
+        self.assertEqual(self.source.read_bytes(),self.original)
     def test_roundtrip_preserves_every_payload_byte(self):
         c=self.ed.container;decoded=SaveContainer(c.encode())
         self.assertEqual(decoded.raw,c.raw);self.assertEqual(decoded.image,c.image);self.assertEqual(decoded.metadata,c.metadata)
@@ -127,9 +286,22 @@ class SaveEditingTests(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(),self.original)
     def test_bad_quantity_and_protected_items_never_write(self):
         before=bytes(self.ed.container.raw)
-        for iid,qty in [(373,2),(373,-1),(201,1),(310,10),(2681,1)]:
+        for iid,qty in [(373,2),(373,-1),(201,1),(310,10),(3460,1),(4450,1)]:
             with self.assertRaises(ValueError):self.ed.set_item(iid,qty)
         self.assertEqual(bytes(self.ed.container.raw),before)
+    def test_cosmetics_from_actual_table_can_be_edited_in_memory(self):
+        cosmetics=[item for item in self.catalog.items.values() if item.category_id in (15,16)]
+        self.assertTrue(cosmetics)
+        for item in cosmetics:
+            self.assertEqual(item.cap,1)
+            self.assertFalse(item.protected)
+        before=bytes(self.ed.container.raw)
+        changed=self.ed.set_items([2500,2681,3300],1)
+        for iid in (2500,2681,3300):self.assertEqual(self.ed.inventory()[iid][0],1)
+        self.ed.validate()
+        if changed:self.ed.undo()
+        self.assertEqual(bytes(self.ed.container.raw),before)
+        self.assertEqual(self.source.read_bytes(),self.original)
     def test_resource_limits_and_undo(self):
         old=self.ed.resources();self.ed.set_resource(8,9999999)
         self.assertEqual(self.ed.resources()[8],9999999);self.ed.undo();self.assertEqual(self.ed.resources(),old)
