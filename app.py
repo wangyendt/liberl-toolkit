@@ -39,7 +39,7 @@ QHeaderView::section { background:#e5eff5; color:#3f6077; border:0; border-botto
 QStatusBar { background:#dfeaf1; }
 '''
 
-VERSION='1.4.0'
+VERSION='1.4.2'
 ASSET_ROOT=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/'assets'
 
 def configure_ui(app):
@@ -136,7 +136,7 @@ class Trainer(QMainWindow):
         self.item_selection=label('已选 0 项','muted')
         v.addLayout(row(self.item_selection,button('全选当前结果',self.item_table.selectAll),button('清除选择',self.item_table.clearSelection)))
         self.item_desc=label('选择物品查看描述；按 Ctrl 点选多项，按 Shift 连选，Ctrl+A 全选当前结果。','muted',True);v.addWidget(self.item_desc)
-        self.item_qty=QSpinBox();self.item_qty.setRange(0,999);self.item_qty.setFixedWidth(100);self.item_write=button('设置数量',self.write_item,True);self.refill_btn=button('补满已有消耗品 / 食材 / 鱼饵',lambda:self.act(self.editor.refill));v.addLayout(row('目标数量',self.item_qty,self.item_write,self.refill_btn))
+        self.item_qty=QSpinBox();self.item_qty.setRange(0,ITEM_QUANTITY_MAX);self.item_qty.setFixedWidth(100);self.item_write=button('设置数量',self.write_item,True);self.refill_btn=button('补满已有消耗品 / 食材 / 鱼饵',lambda:self.act(self.editor.refill));v.addLayout(row('目标数量',self.item_qty,self.item_write,self.refill_btn))
         v.addWidget(label('批量设置时，超出各物品上限的数量按上限设置，只读物品自动跳过。一次撤销可还原整批修改。','muted',True))
         for signal in [self.search.textChanged,self.category.currentTextChanged,self.owned.toggled]:signal.connect(self.filter_items)
         self.item_table.selectionModel().selectionChanged.connect(self.select_item);return w
@@ -162,10 +162,11 @@ class Trainer(QMainWindow):
             self.item_desc.setText('选择物品查看描述；按 Ctrl 点选多项，按 Shift 连选，Ctrl+A 全选当前结果。')
         elif len(indexes)==1:
             it=self.selected_items[0];qty=self.model.quantities.get(it.id,(0,0))[0]
-            self.item_qty.setRange(0,max(0,min(it.cap,999)));self.item_qty.setValue(min(qty,self.item_qty.maximum()))
-            self.item_desc.setText(f'{it.name} · 编号 {it.id}\n{it.description}'+('\n此分类仅供查看。' if it.protected else ''))
+            self.item_qty.setRange(0,max(0,min(it.cap,ITEM_QUANTITY_MAX)));self.item_qty.setValue(min(qty,self.item_qty.maximum()))
+            hint='\n此分类仅供查看。' if it.protected else '\n服装、发色仅修改拥有数量；穿戴请在游戏中操作。' if it.category_id in (15,16) else ''
+            self.item_desc.setText(f'{it.name} · 编号 {it.id}\n{it.description}'+hint)
         else:
-            self.item_qty.setRange(0,999)
+            self.item_qty.setRange(0,ITEM_QUANTITY_MAX)
             names='、'.join(it.name for it in self.selected_items[:5])+(' 等' if len(indexes)>5 else '')
             self.item_desc.setText(f'{names}\n统一设置目标数量，每项按各自上限处理；只读物品自动跳过。')
 

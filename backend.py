@@ -156,7 +156,7 @@ class Editor:
             qty,flags=struct.unpack_from('<HH',inv,item.id*4)
             # Real saves also use bit 0x10 (e.g. flags 0x17 / 0x1F).
             # Keep all five observed bits; item edits preserve existing flags.
-            if qty>9999 or flags&~0x1F:
+            if qty>ITEM_QUANTITY_MAX or flags&~0x1F:
                 raise RuntimeError(f'背包结构校验失败，拒绝修改：物品 {item.id}（{item.name}），数量 {qty}，标记 0x{flags:04X}')
         if any(v>9999999 for v in self.resources()):raise RuntimeError('资源结构校验失败')
 
@@ -212,14 +212,14 @@ class Editor:
 
     def set_item(self,iid,qty):
         item=self.catalog.items[iid]
-        if item.protected:raise ValueError('剧情道具、服装及特殊资源仅供查看')
+        if item.protected:raise ValueError('此物品仅供查看，无法修改数量')
         if not 0<=qty<=item.cap:raise ValueError(f'数量应为 0～{item.cap}')
         a=INVENTORY+iid*4;oldqty,flags=struct.unpack('<HH',self.read(a,4))
         if qty>oldqty:flags|=3  # The game's NEW and possession-history bits.
         return self.apply(f'{item.name} → {qty}',[(a,struct.pack('<HH',qty,flags))])
 
     def set_items(self,iids,qty):
-        if not isinstance(qty,int) or not 0<=qty<=999:raise ValueError('目标数量应为 0～999')
+        if not isinstance(qty,int) or not 0<=qty<=ITEM_QUANTITY_MAX:raise ValueError(f'目标数量应为 0～{ITEM_QUANTITY_MAX}')
         ids=list(dict.fromkeys(iids))
         if not ids:raise ValueError('请先选择物品')
         if any(iid not in self.catalog.items for iid in ids):raise ValueError('选中的物品编号无效，请刷新后重试')

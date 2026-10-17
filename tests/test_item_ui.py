@@ -30,6 +30,9 @@ class ItemSelectionTests(unittest.TestCase):
                     373:Item(373,'测试书籍','描述',2,13,1,0),
                     2100:Item(2100,'测试食材一','描述',20,7,99,0),
                     2101:Item(2101,'测试食材二','描述',20,7,10,0),
+                    2200:Item(2200,'测试素材','描述',20,5,9999,0),
+                    2500:Item(2500,'测试外观服装','描述',15,0,1,0),
+                    3300:Item(3300,'测试外观发色','描述',16,0,1,0),
                 })
                 window.editor=SimpleNamespace(mode='save',set_item=Mock(),set_items=Mock(),refill=Mock())
                 window.selected_items=[]
@@ -94,3 +97,42 @@ class ItemSelectionTests(unittest.TestCase):
         self.window.item_table.selectAll()
         self.assertFalse(self.window.item_write.isEnabled())
         self.assertFalse(self.window.item_qty.isEnabled())
+
+    def test_material_can_be_selected_and_set_above_999(self):
+        self.click_row(4)
+        self.assertEqual(self.window.item_qty.maximum(),9999)
+        self.assertTrue(self.window.item_write.isEnabled())
+        self.window.item_qty.setValue(5000)
+        self.window.item_write.click()
+        self.window.editor.set_item.assert_called_once_with(2200,5000)
+        self.click_row(2,Qt.ControlModifier)
+        self.assertEqual(self.window.item_qty.maximum(),9999)
+        self.window.item_qty.setValue(9999)
+        self.window.item_write.click()
+        self.window.editor.set_items.assert_called_once()
+        ids,qty=self.window.editor.set_items.call_args.args
+        self.assertCountEqual(ids,[2100,2200])
+        self.assertEqual(qty,9999)
+
+    def test_costume_and_hair_filters_allow_single_and_batch_editing(self):
+        for category,iid in [('服装',2500),('发色',3300)]:
+            with self.subTest(category=category):
+                self.window.category.setCurrentText(category)
+                self.window.item_table.selectAll()
+                self.assertTrue(self.window.item_write.isEnabled())
+                self.assertEqual(self.window.item_qty.maximum(),1)
+                self.assertIn('穿戴',self.window.item_desc.text())
+                self.window.item_qty.setValue(1)
+                self.window.item_write.click()
+                self.window.editor.set_item.assert_called_once_with(iid,1)
+                self.window.editor.set_item.reset_mock()
+        self.window.category.setCurrentText('全部分类')
+        self.window.search.setText('外观')
+        self.window.item_table.selectAll()
+        self.assertIn('可修改 2 项',self.window.item_selection.text())
+        self.window.item_qty.setValue(1)
+        self.window.item_write.click()
+        self.window.editor.set_items.assert_called_once()
+        ids,qty=self.window.editor.set_items.call_args.args
+        self.assertCountEqual(ids,[2500,3300])
+        self.assertEqual(qty,1)
