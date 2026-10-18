@@ -4,7 +4,9 @@ import hashlib, json, os, struct, uuid, zipfile, zlib
 import zstandard as zstd
 from game_data import *
 from win_memory import ProcessMemory, processes
-from fishing import FishingAssist
+from fishing import FishingAssist,FISHING_RETRY_PATCHES
+from fishing_loop import FishingLoop
+from game_input import GameInput
 from achievements import (AchievementCatalog, AchievementState, ACHIEVEMENT_FLAGS,
                           ACHIEVEMENT_CAPACITY, PROGRESS_SAVE, PROGRESS_LIVE,
                           PROGRESS_CAPACITY, SYSTEM_STATE_RVA, PROFILE_PROBES,
@@ -77,6 +79,7 @@ class Editor:
         self.catalog=catalog;self.memory=None;self.container=None;self.source=None
         self.achievement_catalog=AchievementCatalog(catalog.game_dir,catalog.items)
         self.state=None;self.history=[];self.backup=None;self.lock_resources={};self.sustain=set();self.dirty=False;self.fishing=None
+        self.fishing_loop=None;self.loop_session=False;self.loop_owned_assist=False;self.fishing_retry=None
         self.audit_dir=DATA_ROOT/'logs';self.audit_dir.mkdir(parents=True,exist_ok=True)
         self.audit_file=self.audit_dir/(datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.jsonl')
 
@@ -87,6 +90,7 @@ class Editor:
         self.disable_locks()
         if self.memory:self.memory.close()
         self.memory=None;self.container=None;self.state=None;self.source=None;self.history=[];self.dirty=False;self.backup=None;self.fishing=None
+        self.fishing_loop=None;self.fishing_retry=None
 
     def connect(self):
         ids=processes()
@@ -103,6 +107,7 @@ class Editor:
             if not 0x10000<self.state<0x7FFFFFFFFFFF:raise RuntimeError('尚未载入游戏存档')
             self.validate()
             self.fishing=FishingAssist(mem)
+            self.fishing_retry=FishingAssist(mem,FISHING_RETRY_PATCHES)
         except Exception:
             mem.close();self.memory=None;self.state=None;raise
 
@@ -288,8 +293,59 @@ class Editor:
             changed=self.fishing.enable()
             self.audit({'action':'fishing_on','backup':str(self.backup)})
         else:
+            self.stop_fishing_loop()
             changed=bool(self.fishing.owned);self.fishing.disable();self.audit({'action':'fishing_off'})
         return changed
+
+    def _fishing_quantity(self,iid):
+        if iid not in self.catalog.items:return 0
+        if 310<=iid<=317:return self.resources()[iid-310]
+        return struct.unpack('<H',self.read(INVENTORY+iid*4,2))[0]
+
+    def set_fishing_loop(self,enabled):
+        if not enabled:return self.stop_fishing_loop()
+        if self.loop_session:return False
+        if not self.memory or not self.fishing:raise RuntimeError('全自动钓鱼仅支持实时连接游戏')
+        self._check_live();self.fishing.verify_loop_profile()
+        loop=FishingLoop(self.fishing,GameInput(self.memory),self._fishing_quantity)
+        was_enabled=self.fishing.enabled
+        try:
+            loop.start()
+            if not self.backup:self.backup=backup_saves()
+            self.fishing.enable()
+            self.fishing_retry.enable()
+            self.audit({'action':'fishing_loop_on','backup':str(self.backup)})
+        except Exception:
+            loop.stop('全自动钓鱼启动失败')
+            try:self.fishing_retry.disable()
+            finally:
+                if not was_enabled and self.fishing.owned:self.fishing.disable()
+            raise
+        self.fishing_loop=loop;self.loop_session=True;self.loop_owned_assist=not was_enabled
+        return True
+
+    def stop_fishing_loop(self,message='已手动停止全自动钓鱼'):
+        changed=self.loop_session
+        if self.fishing_loop and (changed or self.fishing_loop.inputs.held):self.fishing_loop.stop(message)
+        errors=[]
+        if self.fishing_retry:
+            try:self.fishing_retry.disable()
+            except Exception as error:errors.append(str(error))
+        if self.loop_owned_assist and self.fishing:
+            try:self.fishing.disable();self.loop_owned_assist=False
+            except Exception as error:errors.append(str(error))
+        self.loop_session=False
+        if changed:self.audit({'action':'fishing_loop_off','reason':message,'rounds':self.fishing_loop.rounds})
+        if errors:raise RuntimeError('；'.join(errors))
+        return changed
+
+    def tick_fishing_loop(self):
+        if not self.loop_session:return
+        try:
+            self._check_live();self.fishing.verify();self.fishing_retry.verify();self.fishing_loop.tick()
+        except Exception:
+            self.stop_fishing_loop('全自动钓鱼发生异常，已停止');raise
+        if not self.fishing_loop.enabled:self.stop_fishing_loop(self.fishing_loop.message)
 
     def achievement_snapshot(self):
         flags=self.read(ACHIEVEMENT_FLAGS,ACHIEVEMENT_CAPACITY)
@@ -313,6 +369,7 @@ class Editor:
 
     def disable_locks(self):
         self.lock_resources={};self.sustain=set()
+        self.stop_fishing_loop('全部持续修改已关闭')
         if self.fishing and self.fishing.owned:
             self.fishing.disable();self.audit({'action':'fishing_off'})
 

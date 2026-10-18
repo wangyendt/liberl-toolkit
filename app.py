@@ -39,7 +39,7 @@ QHeaderView::section { background:#e5eff5; color:#3f6077; border:0; border-botto
 QStatusBar { background:#dfeaf1; }
 '''
 
-VERSION='1.4.2'
+VERSION='1.5.1'
 ASSET_ROOT=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/'assets'
 
 def configure_ui(app):
@@ -102,6 +102,7 @@ class Trainer(QMainWindow):
         self._build();self.refresh_saves();self.refresh_backups()
         self.timer=QTimer(self);self.timer.timeout.connect(self.tick);self.timer.start(200)
         self.refresh_timer=QTimer(self);self.refresh_timer.timeout.connect(self.poll);self.refresh_timer.start(2000)
+        self.fishing_timer=QTimer(self);self.fishing_timer.timeout.connect(self.tick_fishing_loop);self.fishing_timer.start(50)
         QShortcut(QKeySequence('Ctrl+Z'),self,activated=lambda:self.act(self.editor.undo))
         QShortcut(QKeySequence('Ctrl+F'),self,activated=self.focus_search)
         if auto_connect:QTimer.singleShot(0,self.connect_game)
@@ -229,7 +230,39 @@ class Trainer(QMainWindow):
         self.fishing_check=QCheckBox('开启自动钓鱼成功');self.fishing_check.toggled.connect(self.toggle_fishing);bv.addWidget(self.fishing_check)
         self.fishing_status=label('连接游戏后可开启。');bv.addWidget(self.fishing_status)
         bv.addWidget(label('选择匹配的鱼竿和鱼饵，然后抛竿；无需按提竿／收杆键。鱼饵按正常规则消耗，结果页面仍由你确认。','muted',True));v.addWidget(box)
+        loop_box=QGroupBox('全自动循环');lv=QVBoxLayout(loop_box)
+        lv.addWidget(label('在钓鱼点进入鱼竿／鱼饵界面，点击开始，再切回游戏。自动选饵、抛竿、收线、确认奖励并开始下一轮。','muted',True))
+        self.fishing_loop_start=button('开始全自动钓鱼',lambda:self.toggle_fishing_loop(True),True)
+        self.fishing_loop_stop=button('停止循环（F8）',lambda:self.toggle_fishing_loop(False))
+        lv.addLayout(row(self.fishing_loop_start,self.fishing_loop_stop))
+        self.fishing_loop_status=label('全自动循环未开启。','muted',True);lv.addWidget(self.fishing_loop_status)
+        lv.addWidget(label('优先使用当前鱼竿和鱼饵，不足或没有上钩迹象时自动换饵，必要时切换已拥有的匹配鱼竿。切出游戏暂停；F8、游戏中按 Esc／右键或停止按钮可取消。无可用组合、离开钓鱼界面或长时间无响应时停止。','muted',True))
+        v.addWidget(loop_box)
         v.addWidget(label('取消勾选、断开连接或正常退出工具时，会还原钓鱼判定。存档编辑模式不支持自动钓鱼。','muted',True));v.addStretch();return w
+
+    def toggle_fishing_loop(self,enabled):
+        try:
+            self.editor.set_fishing_loop(enabled)
+            self.note('全自动钓鱼已开启，切回游戏后开始；按 F8 取消。' if enabled else '全自动钓鱼已停止。')
+        except Exception as error:self.error(error)
+        self.sync_fishing_loop()
+
+    def sync_fishing_loop(self):
+        running=self.editor.loop_session;live=self.editor.mode=='live'
+        self.fishing_loop_start.setEnabled(live and not running);self.fishing_loop_stop.setEnabled(running)
+        if self.editor.fishing_loop:self.fishing_loop_status.setText(f'已完成 {self.editor.fishing_loop.rounds} 轮 · {self.editor.fishing_loop.message}')
+        self.fishing_check.blockSignals(True)
+        self.fishing_check.setChecked(bool(self.editor.fishing and self.editor.fishing.enabled))
+        self.fishing_check.blockSignals(False)
+
+    def tick_fishing_loop(self):
+        was_running=self.editor.loop_session
+        if not was_running:return
+        try:self.editor.tick_fishing_loop()
+        except Exception as error:self.stop_locks();self.note(f'全自动钓鱼已停止：{error}')
+        self.sync_fishing_loop()
+        if was_running and not self.editor.loop_session and self.editor.fishing_loop:
+            self.note(self.editor.fishing_loop.message)
 
     def toggle_fishing(self,enabled):
         try:
@@ -291,6 +324,7 @@ class Trainer(QMainWindow):
         for check in self.resource_locks+self.sustain_checks:check.blockSignals(True);check.setChecked(False);check.blockSignals(False)
         self.fishing_check.blockSignals(True);self.fishing_check.setChecked(False);self.fishing_check.blockSignals(False);self.fishing_status.setText('自动钓鱼已关闭。')
         self.note('全部持续修改已关闭。')
+        self.sync_fishing_loop()
         return True
 
     def initialize_inputs(self):
@@ -319,6 +353,7 @@ class Trainer(QMainWindow):
         editable=any(not it.protected for it in self.selected_items)
         self.item_write.setEnabled(bool(active and editable));self.item_qty.setEnabled(bool(active and editable))
         self.achievement_page.update_enabled()
+        self.sync_fishing_loop()
 
     def tick(self):
         try:self.editor.tick()
